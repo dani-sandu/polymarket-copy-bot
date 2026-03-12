@@ -13,6 +13,7 @@ const useWebSocket = process.env.USE_WEBSOCKET !== 'false';
 export const config = {
   targetWallet: process.env.TARGET_WALLET || '',
   privateKey: process.env.PRIVATE_KEY || '',
+  proxyWallet: process.env.PROXY_WALLET || '',
   polymarketGeoToken: process.env.POLYMARKET_GEO_TOKEN || '',
   rpcUrl: process.env.RPC_URL || 'https://polygon-rpc.com',
   chainId: 137,
@@ -52,6 +53,12 @@ export const config = {
     useUserChannel: process.env.USE_USER_CHANNEL === 'true',
     wsAssetIds: parseCsv(process.env.WS_ASSET_IDS),
     wsMarketIds: parseCsv(process.env.WS_MARKET_IDS),
+  },
+
+  redeemer: {
+    enabled: process.env.REDEEM_ENABLED === 'true',
+    dryRun: process.env.DRY_RUN !== 'false',
+    intervalSecs: parseInt(process.env.REDEEM_INTERVAL_SECS || '300'),
   }
 };
 

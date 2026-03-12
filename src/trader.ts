@@ -77,7 +77,7 @@ export class TradeExecutor {
   async initialize(): Promise<void> {
     logger.info(`🔧 Initializing trader...`);
     logger.info(`   Signing wallet (EOA): ${this.wallet.address}`);
-    const funderAddress = this.wallet.address;
+    const funderAddress = config.proxyWallet || this.wallet.address;
     logger.info(`   Funder wallet: ${funderAddress}`);
     logger.info(`   Signature type: 0`);
 
@@ -204,7 +204,7 @@ export class TradeExecutor {
       const [tickSizeData, negRisk, feeRateBps] = await Promise.all([
         this.clobClient.getTickSize(tokenId).catch(() => ({ minimum_tick_size: '0.01' })),
         this.clobClient.getNegRisk(tokenId).catch(() => false),
-        this.clobClient.getFeeRateBps(tokenId).catch(() => 0),
+        this.clobClient.getFeeRateBps(tokenId).catch(() => 1000),
       ]);
 
       const tickSizeStr = (tickSizeData as any)?.minimum_tick_size || tickSizeData || '0.01';
@@ -227,7 +227,7 @@ export class TradeExecutor {
         tickSize: 0.01,
         tickSizeStr: '0.01',
         negRisk: false,
-        feeRateBps: 0,
+        feeRateBps: 1000,
         timestamp: now,
       };
       this.marketCache.set(tokenId, defaultMetadata);
@@ -398,9 +398,10 @@ export class TradeExecutor {
   private async executeLimitOrder(originalTrade: Trade, copyNotional: number): Promise<CopyExecutionResult> {
     await this.validateBalanceOrShares(originalTrade.side, copyNotional, originalTrade.tokenId);
 
-    const [orderbook, orderOpts] = await Promise.all([
+    const [orderbook, orderOpts, metadata] = await Promise.all([
       this.clobClient.getOrderBook(originalTrade.tokenId),
       this.getOrderOptions(originalTrade.tokenId),
+      this.getMarketMetadata(originalTrade.tokenId),
     ]);
 
     this.ensureLiquidity(orderbook, originalTrade.side);
@@ -420,7 +421,7 @@ export class TradeExecutor {
         price: validatedPrice,
         size: copyShares,
         side: originalTrade.side as Side,
-        feeRateBps: 0,
+        feeRateBps: metadata.feeRateBps,
       },
       orderOpts,
       OrderType.GTC
@@ -450,9 +451,10 @@ export class TradeExecutor {
   ): Promise<CopyExecutionResult> {
     await this.validateBalanceOrShares(originalTrade.side, copyNotional, originalTrade.tokenId);
 
-    const [orderbook, orderOpts] = await Promise.all([
+    const [orderbook, orderOpts, metadata] = await Promise.all([
       this.clobClient.getOrderBook(originalTrade.tokenId),
       this.getOrderOptions(originalTrade.tokenId),
+      this.getMarketMetadata(originalTrade.tokenId),
     ]);
 
     this.ensureLiquidity(orderbook, originalTrade.side);
@@ -472,7 +474,7 @@ export class TradeExecutor {
         amount: originalTrade.side === 'BUY' ? copyNotional : copyShares,
         price: validatedPrice,
         side: originalTrade.side as Side,
-        feeRateBps: 0,
+        feeRateBps: metadata.feeRateBps,
         orderType: orderTypeEnum,
       },
       orderOpts,
@@ -570,35 +572,27 @@ export class TradeExecutor {
       const decimals = await usdc.decimals();
       const required = ethers.utils.parseUnits(requiredAmount.toString(), decimals);
 
-      const balance = await usdc.balanceOf(this.wallet.address);
+      const fundingAddress = config.proxyWallet || this.wallet.address;
+
+      const balance = await usdc.balanceOf(fundingAddress);
       if (balance.lt(required)) {
         const bal = ethers.utils.formatUnits(balance, decimals);
         throw new Error(`not enough balance / allowance (USDC.e balance ${bal} < required ${requiredAmount})`);
       }
 
-      const allowanceCtf = await usdc.allowance(this.wallet.address, config.contracts.ctf);
+      const allowanceCtf = await usdc.allowance(fundingAddress, config.contracts.ctf);
       if (allowanceCtf.lt(required)) {
         const allow = ethers.utils.formatUnits(allowanceCtf, decimals);
         throw new Error(`not enough balance / allowance (USDC.e allowance to CTF ${allow} < required ${requiredAmount})`);
       }
 
-      const allowanceEx = await usdc.allowance(this.wallet.address, exchangeAddress);
+      const allowanceEx = await usdc.allowance(fundingAddress, exchangeAddress);
       if (allowanceEx.lt(required)) {
         const allow = ethers.utils.formatUnits(allowanceEx, decimals);
         throw new Error(`not enough balance / allowance (USDC.e allowance to Exchange ${allow} < required ${requiredAmount})`);
       }
 
-      const clobBal = await this.clobClient.getBalanceAllowance({ asset_type: 'COLLATERAL' });
-      const clobBalance = parseFloat(clobBal?.balance || '0') / 1_000_000;
-      if (clobBalance < requiredAmount) {
-        throw new Error(`not enough balance / allowance (CLOB balance ${clobBalance} < required ${requiredAmount})`);
-      }
-      const clobAllowance = clobBal?.allowances?.[exchangeAddress] || '0';
-      if (clobAllowance === '0') {
-        throw new Error(`not enough balance / allowance (CLOB allowance to Exchange is 0)`);
-      }
-
-      const approved = await ctf.isApprovedForAll(this.wallet.address, exchangeAddress);
+      const approved = await ctf.isApprovedForAll(fundingAddress, exchangeAddress);
       if (!approved) {
         logger.warn('   ⚠️  CTF approval missing for exchange (required for SELLs)');
       }
@@ -639,6 +633,8 @@ export class TradeExecutor {
     const usdc = new ethers.Contract(config.contracts.usdc, this.ERC20_ABI, this.wallet);
     const ctf = new ethers.Contract(config.contracts.ctf, this.CTF_ABI, this.wallet);
 
+    const fundingAddress = config.proxyWallet || this.wallet.address;
+
     const maticBal = await this.provider.getBalance(this.wallet.address);
     const maticAmount = parseFloat(ethers.utils.formatEther(maticBal));
     if (maticAmount < 0.05) {
@@ -656,7 +652,7 @@ export class TradeExecutor {
     ];
 
     for (const spender of usdcSpenders) {
-      const allowance = await usdc.allowance(this.wallet.address, spender.address);
+      const allowance = await usdc.allowance(fundingAddress, spender.address);
       if (allowance.lt(minAllowance)) {
         logger.info(`   Approving USDC.e to ${spender.name} (${spender.address})...`);
         const tx = await usdc.approve(spender.address, ethers.constants.MaxUint256, gasOverrides);
@@ -674,7 +670,7 @@ export class TradeExecutor {
     ];
 
     for (const operator of operators) {
-      const approved = await ctf.isApprovedForAll(this.wallet.address, operator.address);
+      const approved = await ctf.isApprovedForAll(fundingAddress, operator.address);
       if (!approved) {
         logger.info(`   Approving CTF for ${operator.name} (${operator.address})...`);
         const tx = await ctf.setApprovalForAll(operator.address, true, gasOverrides);

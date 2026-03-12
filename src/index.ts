@@ -5,6 +5,7 @@ import type { Trade } from './monitor.js';
 import { TradeExecutor } from './trader.js';
 import { PositionTracker } from './positions.js';
 import { RiskManager } from './risk-manager.js';
+import { Redeemer } from './redeemer.js';
 import { logger } from './logger.js';
 
 class PolymarketCopyBot {
@@ -13,6 +14,7 @@ class PolymarketCopyBot {
   private executor: TradeExecutor;
   private positions: PositionTracker;
   private risk: RiskManager;
+  private redeemer?: Redeemer;
   private isRunning: boolean = false;
   private processedTrades: Set<string> = new Set();
   private botStartTime: number = 0;
@@ -78,8 +80,17 @@ class PolymarketCopyBot {
       } catch (error) {
         logger.error('⚠️  WebSocket initialization failed, falling back to REST API only');
         logger.error('   Error:', String(error));
-        this.wsMonitor = undefined;
+        delete this.wsMonitor;
       }
+    }
+
+    // Start background redeemer if enabled
+    if (config.redeemer.enabled) {
+      this.redeemer = new Redeemer();
+      // Fire and forget — runs in background
+      this.redeemer.start().catch(err => {
+        logger.error(`[REDEEMER] Fatal error: ${err.message}`);
+      });
     }
   }
   
@@ -203,6 +214,10 @@ class PolymarketCopyBot {
 
     if (this.wsMonitor) {
       this.wsMonitor.close();
+    }
+
+    if (this.redeemer) {
+      this.redeemer.stop();
     }
 
     logger.info('\n🛑 Bot stopped');

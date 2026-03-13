@@ -13,6 +13,8 @@ export interface Trade {
   price: number;
   size: number;
   outcome: TradeOutcome;
+  slug?: string;
+  title?: string;
 }
 
 export class TradeMonitor {
@@ -66,6 +68,8 @@ export class TradeMonitor {
       price: parseFloat(apiTrade.price),
       size: parseFloat(apiTrade.usdcSize || apiTrade.size),
       outcome: this.normalizeOutcome(apiTrade.outcome),
+      slug: apiTrade.slug || undefined,
+      title: apiTrade.title || undefined,
     };
   }
 

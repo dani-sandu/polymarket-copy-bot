@@ -41,6 +41,10 @@ class PolymarketCopyBot {
     logger.info(`Max trade size: ${config.trading.maxTradeSize} USDC`);
     logger.info(`Order type: ${config.trading.orderType}`);
     logger.info(`Copy sells: ${config.trading.copySells ? 'Yes' : 'No (BUY only)'}`);
+    logger.info(`Min target trade size: ${config.trading.minCopyUsdc} USDC`);
+    if (config.trading.excludedSlugPatterns.length > 0) {
+      logger.info(`Excluded slug patterns: ${config.trading.excludedSlugPatterns.join(', ')}`);
+    }
     logger.info(`WebSocket: ${config.monitoring.useWebSocket ? 'Enabled' : 'Disabled'}`);
     if (config.risk.maxSessionNotional > 0 || config.risk.maxPerMarketNotional > 0) {
       logger.info(`Risk caps: session=${config.risk.maxSessionNotional || '∞'} USDC, per-market=${config.risk.maxPerMarketNotional || '∞'} USDC`);
@@ -142,6 +146,22 @@ class PolymarketCopyBot {
     if (trade.side === 'SELL' && !config.trading.copySells) {
       logger.warn('⚠️  Skipping SELL trade (COPY_SELLS=false, BUY-only mode)');
       return;
+    }
+
+    // Filter: minimum USDC size (skip dust / order-book fragments)
+    if (trade.size < config.trading.minCopyUsdc) {
+      logger.warn(`⚠️  Skipping trade: size $${trade.size.toFixed(2)} below MIN_COPY_USDC ($${config.trading.minCopyUsdc})`);
+      return;
+    }
+
+    // Filter: excluded slug patterns (e.g. skip 5-minute markets)
+    if (trade.slug && config.trading.excludedSlugPatterns.length > 0) {
+      const slugLower = trade.slug.toLowerCase();
+      const matchedPattern = config.trading.excludedSlugPatterns.find(p => slugLower.includes(p.toLowerCase()));
+      if (matchedPattern) {
+        logger.warn(`⚠️  Skipping trade: slug "${trade.slug}" matches excluded pattern "${matchedPattern}"`);
+        return;
+      }
     }
 
     const copyNotional = this.executor.calculateCopySize(trade.size);

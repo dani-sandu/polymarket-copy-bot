@@ -36,6 +36,10 @@ export const config = {
     orderType: (process.env.ORDER_TYPE || 'FOK') as 'LIMIT' | 'FOK' | 'FAK',
     // Copy SELL trades in addition to BUY (requires holding position from copied BUYs)
     copySells: process.env.COPY_SELLS !== 'false',
+    // Minimum USDC size of the TARGET's trade to copy (filters out dust/order-book fragments)
+    minCopyUsdc: parseFloat(process.env.MIN_COPY_USDC || '10'),
+    // Comma-separated slug substrings to exclude (e.g. "5m,updown-5m" skips 5-minute markets)
+    excludedSlugPatterns: parseCsv(process.env.EXCLUDED_SLUG_PATTERNS),
   },
 
   risk: {

@@ -38,6 +38,9 @@ export const config = {
     copySells: process.env.COPY_SELLS !== 'false',
     // Minimum USDC size of the TARGET's trade to copy (filters out dust/order-book fragments)
     minCopyUsdc: parseFloat(process.env.MIN_COPY_USDC || '10'),
+    // Skip trades where the target's entry price is outside this range (filters hedges)
+    minCopyPrice: parseFloat(process.env.MIN_COPY_PRICE || '0'),
+    maxCopyPrice: parseFloat(process.env.MAX_COPY_PRICE || '1'),
     // Comma-separated slug substrings to exclude (e.g. "5m,updown-5m" skips 5-minute markets)
     excludedSlugPatterns: parseCsv(process.env.EXCLUDED_SLUG_PATTERNS),
   },

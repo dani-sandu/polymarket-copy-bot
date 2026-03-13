@@ -42,6 +42,9 @@ class PolymarketCopyBot {
     logger.info(`Order type: ${config.trading.orderType}`);
     logger.info(`Copy sells: ${config.trading.copySells ? 'Yes' : 'No (BUY only)'}`);
     logger.info(`Min target trade size: ${config.trading.minCopyUsdc} USDC`);
+    if (config.trading.minCopyPrice > 0 || config.trading.maxCopyPrice < 1) {
+      logger.info(`Price filter: [${config.trading.minCopyPrice}, ${config.trading.maxCopyPrice}]`);
+    }
     if (config.trading.excludedSlugPatterns.length > 0) {
       logger.info(`Excluded slug patterns: ${config.trading.excludedSlugPatterns.join(', ')}`);
     }
@@ -151,6 +154,12 @@ class PolymarketCopyBot {
     // Filter: minimum USDC size (skip dust / order-book fragments)
     if (trade.size < config.trading.minCopyUsdc) {
       logger.warn(`⚠️  Skipping trade: size $${trade.size.toFixed(2)} below MIN_COPY_USDC ($${config.trading.minCopyUsdc})`);
+      return;
+    }
+
+    // Filter: target entry price range (skip cheap hedges / overpriced entries)
+    if (trade.price < config.trading.minCopyPrice || trade.price > config.trading.maxCopyPrice) {
+      logger.warn(`⚠️  Skipping trade: price ${trade.price.toFixed(3)} outside allowed range [${config.trading.minCopyPrice}, ${config.trading.maxCopyPrice}]`);
       return;
     }
 

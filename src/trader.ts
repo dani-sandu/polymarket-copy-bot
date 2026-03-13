@@ -551,8 +551,9 @@ export class TradeExecutor {
 
   private async fetchPositionsFromDataApi(): Promise<any[]> {
     try {
+      const user = (config.proxyWallet || this.wallet.address).toLowerCase();
       const res = await axios.get(DATA_API_POSITIONS, {
-        params: { user: this.wallet.address.toLowerCase(), limit: 500 },
+        params: { user, limit: 500 },
         headers: { Accept: 'application/json' },
       });
       return Array.isArray(res.data) ? res.data : [];

@@ -177,7 +177,15 @@ class PolymarketCopyBot {
 
     if (trade.side === 'SELL') {
       const copyShares = this.executor.calculateSharesForNotional(copyNotional, trade.price);
-      const position = this.positions.getPosition(trade.tokenId);
+      let position = this.positions.getPosition(trade.tokenId);
+
+      // If local tracker doesn't have enough shares, refresh from Data API
+      if (!position || position.shares < copyShares) {
+        logger.info(`   Refreshing positions from Data API before sell check...`);
+        await this.reconcilePositions();
+        position = this.positions.getPosition(trade.tokenId);
+      }
+
       if (!position || position.shares < copyShares) {
         logger.warn(`⚠️  Skipping SELL trade: insufficient position (have ${position?.shares?.toFixed(4) ?? 0}, need ${copyShares.toFixed(4)} shares)`);
         return;

@@ -627,7 +627,6 @@ export class TradeExecutor {
   }
   private async ensureApprovals(): Promise<void> {
     if (this.approvalsChecked) return;
-    this.approvalsChecked = true;
 
     logger.info('🔐 Checking required token approvals (EOA mode)...');
 
@@ -647,9 +646,9 @@ export class TradeExecutor {
     const gasOverrides = await this.getGasOverrides();
 
     const usdcSpenders = [
-      { name: 'CTF', address: config.contracts.ctf },
-      { name: 'CTF Exchange', address: config.contracts.exchange },
-      { name: 'Neg Risk CTF Exchange', address: config.contracts.negRiskExchange },
+      { name: 'Exchange', address: config.contracts.exchange },
+      { name: 'Neg Risk Exchange', address: config.contracts.negRiskExchange },
+      { name: 'Neg Risk Adapter', address: config.contracts.negRiskAdapter },
     ];
 
     for (const spender of usdcSpenders) {
@@ -682,6 +681,8 @@ export class TradeExecutor {
         logger.info(`   ✅ CTF already approved for ${operator.name}`);
       }
     }
+
+    this.approvalsChecked = true;
   }
 
   private async getGasOverrides(): Promise<ethers.providers.TransactionRequest> {

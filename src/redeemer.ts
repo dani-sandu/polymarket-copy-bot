@@ -11,6 +11,7 @@ const CTF_ABI = [
   'function isApprovedForAll(address owner, address operator) view returns (bool)',
   'function setApprovalForAll(address operator, bool approved)',
   'function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)',
+  'function payoutDenominator(bytes32 conditionId) view returns (uint256)',
 ];
 
 const NEG_RISK_ADAPTER_ABI = [
@@ -124,8 +125,13 @@ export class Redeemer {
           // Fallback: check Gamma API for resolution status
           const resolution = await this.fetchMarketResolution(conditionId);
           if (!resolution || !resolution.resolved) {
-            result.skipped++;
-            continue;
+            // Final fallback: check on-chain payoutDenominator
+            const onChainResolved = await this.checkOnChainResolved(conditionId);
+            if (!onChainResolved) {
+              result.skipped++;
+              continue;
+            }
+            logger.info(`[REDEEMER] "${title}" resolved ON-CHAIN (API lagging)`);
           }
         }
 
@@ -222,6 +228,20 @@ export class Redeemer {
       return { resolved, negRisk, ...(winnerToken?.outcome ? { winner: winnerToken.outcome } : {}) };
     } catch {
       return null;
+    }
+  }
+
+  /** Check on-chain whether a condition is resolved via CTF.payoutDenominator(conditionId). */
+  private async checkOnChainResolved(conditionId: string): Promise<boolean> {
+    try {
+      const conditionIdBytes = ethers.utils.hexZeroPad(
+        conditionId.startsWith('0x') ? conditionId : `0x${conditionId}`,
+        32
+      );
+      const denominator: ethers.BigNumber = await this.ctf.payoutDenominator(conditionIdBytes);
+      return !denominator.isZero();
+    } catch {
+      return false;
     }
   }
 

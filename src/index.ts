@@ -185,6 +185,15 @@ class PolymarketCopyBot {
     const aggWindow = config.trading.aggregationWindowMs;
     if (aggWindow > 0 && trade.side === 'BUY') {
       const conditionId = trade.market; // conditionId
+
+      // Instant-execute: if a single fill already exceeds MIN_COPY_USDC, skip aggregation
+      // to minimize latency on fast-resolving markets
+      if (trade.size >= config.trading.minCopyUsdc && !this.pendingAggregations.has(conditionId)) {
+        logger.info(`   ⚡ Single fill $${trade.size.toFixed(2)} >= MIN_COPY_USDC — executing immediately (skipping aggregation)`);
+        await this.executeTrade(trade);
+        return;
+      }
+
       const existing = this.pendingAggregations.get(conditionId);
       if (existing) {
         existing.trades.push(trade);

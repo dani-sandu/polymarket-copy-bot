@@ -317,14 +317,15 @@ class PolymarketCopyBot {
     const copyNotional = this.executor.calculateCopySize(trade.size);
 
     // Price-staleness guard: check if current market price has moved too far from target's fill
+    // Uses absolute price difference (not percentage) — suited for binary 0→1 markets
     const maxDeviation = config.trading.maxPriceDeviation;
     if (maxDeviation > 0 && trade.side === 'BUY') {
       try {
         const currentPrice = await this.executor.getCurrentPrice(trade.tokenId, trade.side);
         if (currentPrice !== null) {
-          const deviation = (currentPrice - trade.price) / trade.price;
-          if (deviation > maxDeviation) {
-            logger.warn(`⚠️  Skipping trade: price moved +${(deviation * 100).toFixed(1)}% since target's fill (${trade.price.toFixed(3)} → ${currentPrice.toFixed(3)}, max ${(maxDeviation * 100).toFixed(0)}%)`);
+          const absoluteDiff = currentPrice - trade.price;
+          if (absoluteDiff > maxDeviation) {
+            logger.warn(`⚠️  Skipping trade: price moved +${absoluteDiff.toFixed(3)} since target's fill (${trade.price.toFixed(3)} → ${currentPrice.toFixed(3)}, max ${maxDeviation.toFixed(2)})`);
             return;
           }
         }

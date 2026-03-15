@@ -43,6 +43,15 @@ export const config = {
     maxCopyPrice: parseFloat(process.env.MAX_COPY_PRICE || '1'),
     // Comma-separated slug substrings to exclude (e.g. "5m,updown-5m" skips 5-minute markets)
     excludedSlugPatterns: parseCsv(process.env.EXCLUDED_SLUG_PATTERNS),
+    // Aggregation window (ms): batch target trades on the same conditionId,
+    // then copy only the NET directional position. 0 = disabled (copy each fill).
+    aggregationWindowMs: parseInt(process.env.AGGREGATION_WINDOW_MS || '10000'),
+    // Max acceptable price move vs. the target's fill price. Skip if market moved
+    // more than this fraction against us (e.g. 0.10 = 10%). 0 = disabled.
+    maxPriceDeviation: parseFloat(process.env.MAX_PRICE_DEVIATION || '0.10'),
+    // Preferred outcome side to copy: 'both', 'winning', or explicit 'Up'/'Down'/'Yes'/'No'.
+    // 'winning' requires oneSideThreshold to compute which side the target favours.
+    copyOutcomeSide: (process.env.COPY_OUTCOME_SIDE || 'both') as string,
   },
 
   risk: {

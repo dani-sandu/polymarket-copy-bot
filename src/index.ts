@@ -188,13 +188,24 @@ class PolymarketCopyBot {
       const existing = this.pendingAggregations.get(conditionId);
       if (existing) {
         existing.trades.push(trade);
+        // Sliding window: reset the timer on each new trade so we capture the full burst
+        clearTimeout(existing.timer);
+        existing.timer = setTimeout(() => {
+          this.flushAggregation(conditionId).catch(err => {
+            logger.error(`❌ Aggregation flush failed for ${conditionId.substring(0, 10)}...: ${err?.message || err}`);
+          });
+        }, aggWindow);
         logger.info(`   ⏳ Buffered into aggregation (${existing.trades.length} trades for ${conditionId.substring(0, 10)}...)`);
         return;
       }
       // Start new aggregation window
       const agg = {
         trades: [trade],
-        timer: setTimeout(() => this.flushAggregation(conditionId), aggWindow),
+        timer: setTimeout(() => {
+          this.flushAggregation(conditionId).catch(err => {
+            logger.error(`❌ Aggregation flush failed for ${conditionId.substring(0, 10)}...: ${err?.message || err}`);
+          });
+        }, aggWindow),
       };
       this.pendingAggregations.set(conditionId, agg);
       logger.info(`   ⏳ Started ${aggWindow}ms aggregation window for ${conditionId.substring(0, 10)}...`);
@@ -217,7 +228,12 @@ class PolymarketCopyBot {
   private async flushAggregation(conditionId: string): Promise<void> {
     const agg = this.pendingAggregations.get(conditionId);
     this.pendingAggregations.delete(conditionId);
-    if (!agg || agg.trades.length === 0) return;
+    if (!agg || agg.trades.length === 0) {
+      logger.info(`🔀 Aggregation flush for ${conditionId.substring(0, 10)}... — nothing to flush`);
+      return;
+    }
+
+    logger.info(`\n🔀 AGGREGATION FLUSH (${conditionId.substring(0, 10)}...) — ${agg.trades.length} buffered trades`);
 
     // Group by tokenId to see if target bet on both sides
     const byToken: Map<string, { totalUsdc: number; weightedPrice: number; trades: Trade[] }> = new Map();

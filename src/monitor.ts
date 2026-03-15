@@ -78,6 +78,10 @@ export class TradeMonitor {
     if (normalized === 'YES' || normalized === 'NO') {
       return normalized;
     }
+    // Map Up/Down to YES/NO for binary markets
+    if (normalized === 'UP' || normalized === 'DOWN') {
+      return normalized === 'UP' ? 'YES' : 'NO';
+    }
     return 'UNKNOWN';
   }
   

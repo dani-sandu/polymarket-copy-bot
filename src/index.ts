@@ -163,12 +163,6 @@ class PolymarketCopyBot {
       return;
     }
 
-    // Filter: minimum USDC size (skip dust / order-book fragments)
-    if (trade.size < config.trading.minCopyUsdc) {
-      logger.warn(`⚠️  Skipping trade: size $${trade.size.toFixed(2)} below MIN_COPY_USDC ($${config.trading.minCopyUsdc})`);
-      return;
-    }
-
     // Filter: target entry price range (skip cheap hedges / overpriced entries)
     if (trade.price < config.trading.minCopyPrice || trade.price > config.trading.maxCopyPrice) {
       logger.warn(`⚠️  Skipping trade: price ${trade.price.toFixed(3)} outside allowed range [${config.trading.minCopyPrice}, ${config.trading.maxCopyPrice}]`);
@@ -185,7 +179,9 @@ class PolymarketCopyBot {
       }
     }
 
-    // Aggregation: if enabled, buffer trades per conditionId and flush after window
+    // Aggregation: if enabled, buffer BUY trades per conditionId and flush after window.
+    // MIN_COPY_USDC is checked AFTER aggregation (in flushAggregation) so small fills
+    // that combine into a meaningful position are not prematurely rejected.
     const aggWindow = config.trading.aggregationWindowMs;
     if (aggWindow > 0 && trade.side === 'BUY') {
       const conditionId = trade.market; // conditionId
@@ -202,6 +198,12 @@ class PolymarketCopyBot {
       };
       this.pendingAggregations.set(conditionId, agg);
       logger.info(`   ⏳ Started ${aggWindow}ms aggregation window for ${conditionId.substring(0, 10)}...`);
+      return;
+    }
+
+    // For non-aggregated trades (SELL, or aggregation disabled), check min size here
+    if (trade.size < config.trading.minCopyUsdc) {
+      logger.warn(`⚠️  Skipping trade: size $${trade.size.toFixed(2)} below MIN_COPY_USDC ($${config.trading.minCopyUsdc})`);
       return;
     }
 
@@ -269,6 +271,11 @@ class PolymarketCopyBot {
       // Not hedged or copyOutcomeSide='both' — execute each side
       logger.info(`\n🔀 AGGREGATION FLUSH (${conditionId.substring(0, 10)}...) — ${sides.length} side(s)`);
       for (const [, data] of sides) {
+        // Apply MIN_COPY_USDC to the aggregated total, not individual fills
+        if (data.totalUsdc < config.trading.minCopyUsdc) {
+          logger.warn(`   ⚠️  Aggregated size $${data.totalUsdc.toFixed(2)} below MIN_COPY_USDC — skipping`);
+          continue;
+        }
         const base = data.trades[0]!;
         const representativeTrade: Trade = {
           txHash: base.txHash,

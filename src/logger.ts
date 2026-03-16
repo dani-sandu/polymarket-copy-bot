@@ -1,3 +1,4 @@
-import { logger } from 'pino-pretty-log';
+import pino from 'pino';
+import pretty from 'pino-pretty';
 
-export { logger };
+export const logger = pino(pretty({ colorize: true }));

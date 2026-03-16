@@ -264,25 +264,6 @@ export class TradeExecutor {
     return Number(orderbook.bids[0]?.price || fallback);
   }
 
-  /**
-   * Fetch the current best price for a given tokenId + side from the live orderbook.
-   * Returns null if the orderbook call fails.
-   */
-  async getCurrentPrice(tokenId: string, side: 'BUY' | 'SELL'): Promise<number | null> {
-    try {
-      const orderbook = await this.clobClient.getOrderBook(tokenId);
-      if (side === 'BUY' && orderbook.asks.length > 0) {
-        return Number(orderbook.asks[0]!.price);
-      }
-      if (side === 'SELL' && orderbook.bids.length > 0) {
-        return Number(orderbook.bids[0]!.price);
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
   private applySlippage(price: number, side: 'BUY' | 'SELL', slippage: number): number {
     if (side === 'BUY') {
       return Math.min(price * (1 + slippage), 0.99);

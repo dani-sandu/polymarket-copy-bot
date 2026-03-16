@@ -26,9 +26,6 @@ class PolymarketCopyBot {
     totalVolume: 0,
   };
 
-  // Aggregation: buffer trades per conditionId (market), flush after window expires
-  private pendingAggregations: Map<string, { trades: Trade[]; timer: NodeJS.Timeout }> = new Map();
-
   constructor() {
     this.monitor = new TradeMonitor();
     this.executor = new TradeExecutor();
@@ -50,15 +47,6 @@ class PolymarketCopyBot {
     }
     if (config.trading.excludedSlugPatterns.length > 0) {
       logger.info(`Excluded slug patterns: ${config.trading.excludedSlugPatterns.join(', ')}`);
-    }
-    if (config.trading.aggregationWindowMs > 0) {
-      logger.info(`Aggregation window: ${config.trading.aggregationWindowMs}ms (net-directional)`);
-    }
-    if (config.trading.maxPriceDeviation > 0) {
-      logger.info(`Max price deviation: ${(config.trading.maxPriceDeviation * 100).toFixed(0)}%`);
-    }
-    if (config.trading.copyOutcomeSide !== 'both') {
-      logger.info(`Copy outcome side: ${config.trading.copyOutcomeSide} (skip other side of hedges)`);
     }
     logger.info(`WebSocket: ${config.monitoring.useWebSocket ? 'Enabled' : 'Disabled'}`);
     if (config.risk.maxSessionNotional > 0 || config.risk.maxPerMarketNotional > 0) {
@@ -163,6 +151,12 @@ class PolymarketCopyBot {
       return;
     }
 
+    // Filter: minimum USDC size (skip dust / order-book fragments)
+    if (trade.size < config.trading.minCopyUsdc) {
+      logger.warn(`⚠️  Skipping trade: size $${trade.size.toFixed(2)} below MIN_COPY_USDC ($${config.trading.minCopyUsdc})`);
+      return;
+    }
+
     // Filter: target entry price range (skip cheap hedges / overpriced entries)
     if (trade.price < config.trading.minCopyPrice || trade.price > config.trading.maxCopyPrice) {
       logger.warn(`⚠️  Skipping trade: price ${trade.price.toFixed(3)} outside allowed range [${config.trading.minCopyPrice}, ${config.trading.maxCopyPrice}]`);
@@ -179,169 +173,7 @@ class PolymarketCopyBot {
       }
     }
 
-    // Aggregation: if enabled, buffer BUY trades per conditionId and flush after window.
-    // MIN_COPY_USDC is checked AFTER aggregation (in flushAggregation) so small fills
-    // that combine into a meaningful position are not prematurely rejected.
-    const aggWindow = config.trading.aggregationWindowMs;
-    if (aggWindow > 0 && trade.side === 'BUY') {
-      const conditionId = trade.market; // conditionId
-
-      // Instant-execute: if a single fill already exceeds MIN_COPY_USDC, skip aggregation
-      // to minimize latency on fast-resolving markets
-      if (trade.size >= config.trading.minCopyUsdc && !this.pendingAggregations.has(conditionId)) {
-        logger.info(`   ⚡ Single fill $${trade.size.toFixed(2)} >= MIN_COPY_USDC — executing immediately (skipping aggregation)`);
-        await this.executeTrade(trade);
-        return;
-      }
-
-      const existing = this.pendingAggregations.get(conditionId);
-      if (existing) {
-        existing.trades.push(trade);
-        // Sliding window: reset the timer on each new trade so we capture the full burst
-        clearTimeout(existing.timer);
-        existing.timer = setTimeout(() => {
-          this.flushAggregation(conditionId).catch(err => {
-            logger.error(`❌ Aggregation flush failed for ${conditionId.substring(0, 10)}...: ${err?.message || err}`);
-          });
-        }, aggWindow);
-        logger.info(`   ⏳ Buffered into aggregation (${existing.trades.length} trades for ${conditionId.substring(0, 10)}...)`);
-        return;
-      }
-      // Start new aggregation window
-      const agg = {
-        trades: [trade],
-        timer: setTimeout(() => {
-          this.flushAggregation(conditionId).catch(err => {
-            logger.error(`❌ Aggregation flush failed for ${conditionId.substring(0, 10)}...: ${err?.message || err}`);
-          });
-        }, aggWindow),
-      };
-      this.pendingAggregations.set(conditionId, agg);
-      logger.info(`   ⏳ Started ${aggWindow}ms aggregation window for ${conditionId.substring(0, 10)}...`);
-      return;
-    }
-
-    // For non-aggregated trades (SELL, or aggregation disabled), check min size here
-    if (trade.size < config.trading.minCopyUsdc) {
-      logger.warn(`⚠️  Skipping trade: size $${trade.size.toFixed(2)} below MIN_COPY_USDC ($${config.trading.minCopyUsdc})`);
-      return;
-    }
-
-    await this.executeTrade(trade);
-  }
-
-  /**
-   * Flush aggregated trades for a conditionId.
-   * Computes the net directional BUY, applying one-side-only filtering.
-   */
-  private async flushAggregation(conditionId: string): Promise<void> {
-    const agg = this.pendingAggregations.get(conditionId);
-    this.pendingAggregations.delete(conditionId);
-    if (!agg || agg.trades.length === 0) {
-      logger.info(`🔀 Aggregation flush for ${conditionId.substring(0, 10)}... — nothing to flush`);
-      return;
-    }
-
-    logger.info(`\n🔀 AGGREGATION FLUSH (${conditionId.substring(0, 10)}...) — ${agg.trades.length} buffered trades`);
-
-    // Group by tokenId to see if target bet on both sides
-    const byToken: Map<string, { totalUsdc: number; weightedPrice: number; trades: Trade[] }> = new Map();
-    for (const t of agg.trades) {
-      const existing = byToken.get(t.tokenId);
-      if (existing) {
-        existing.weightedPrice = (existing.weightedPrice * existing.totalUsdc + t.price * t.size) / (existing.totalUsdc + t.size);
-        existing.totalUsdc += t.size;
-        existing.trades.push(t);
-      } else {
-        byToken.set(t.tokenId, { totalUsdc: t.size, weightedPrice: t.price, trades: [t] });
-      }
-    }
-
-    const sides = Array.from(byToken.entries());
-    const copyOutcomeSide = config.trading.copyOutcomeSide.toLowerCase();
-
-    if (sides.length > 1 && copyOutcomeSide !== 'both') {
-      // Target hedged both sides — pick only the larger (net) side
-      sides.sort((a, b) => b[1].totalUsdc - a[1].totalUsdc);
-      const winner = sides[0]!;
-      const winnerData = winner[1];
-      const winnerTrade = winnerData.trades[0]!;
-      const loserTotal = sides.slice(1).reduce((s, [, d]) => s + d.totalUsdc, 0);
-      const netUsdc = winnerData.totalUsdc - loserTotal;
-
-      logger.info(`\n🔀 AGGREGATION FLUSH (${conditionId.substring(0, 10)}...)`);
-      logger.info(`   Target bet BOTH sides: ${sides.map(([, d]) => `$${d.totalUsdc.toFixed(2)}`).join(' vs ')}`);
-      logger.info(`   Net directional: ${winnerTrade.outcome} $${netUsdc.toFixed(2)}`);
-
-      if (netUsdc < config.trading.minCopyUsdc) {
-        logger.warn(`   ⚠️  Net size $${netUsdc.toFixed(2)} below minimum — skipping hedged market`);
-        return;
-      }
-
-      // Build a synthetic trade for the net directional position
-      const syntheticTrade: Trade = {
-        txHash: winnerTrade.txHash,
-        timestamp: winnerTrade.timestamp,
-        market: winnerTrade.market,
-        tokenId: winnerTrade.tokenId,
-        side: winnerTrade.side,
-        outcome: winnerTrade.outcome,
-        size: netUsdc,
-        price: winnerData.weightedPrice,
-      };
-      if (winnerTrade.slug !== undefined) syntheticTrade.slug = winnerTrade.slug;
-      if (winnerTrade.title !== undefined) syntheticTrade.title = winnerTrade.title;
-      await this.executeTrade(syntheticTrade);
-    } else {
-      // Not hedged or copyOutcomeSide='both' — execute each side
-      logger.info(`\n🔀 AGGREGATION FLUSH (${conditionId.substring(0, 10)}...) — ${sides.length} side(s)`);
-      for (const [, data] of sides) {
-        // Apply MIN_COPY_USDC to the aggregated total, not individual fills
-        if (data.totalUsdc < config.trading.minCopyUsdc) {
-          logger.warn(`   ⚠️  Aggregated size $${data.totalUsdc.toFixed(2)} below MIN_COPY_USDC — skipping`);
-          continue;
-        }
-        const base = data.trades[0]!;
-        const representativeTrade: Trade = {
-          txHash: base.txHash,
-          timestamp: base.timestamp,
-          market: base.market,
-          tokenId: base.tokenId,
-          side: base.side,
-          outcome: base.outcome,
-          size: data.totalUsdc,
-          price: data.weightedPrice,
-        };
-        if (base.slug !== undefined) representativeTrade.slug = base.slug;
-        if (base.title !== undefined) representativeTrade.title = base.title;
-        await this.executeTrade(representativeTrade);
-      }
-    }
-  }
-
-  /**
-   * Execute a single trade with price-staleness guard and risk checks.
-   */
-  private async executeTrade(trade: Trade): Promise<void> {
     const copyNotional = this.executor.calculateCopySize(trade.size);
-
-    // Price-staleness guard: check if current market price has moved too far from target's fill
-    // Uses absolute price difference (not percentage) — suited for binary 0→1 markets
-    const maxDeviation = config.trading.maxPriceDeviation;
-    if (maxDeviation > 0 && trade.side === 'BUY') {
-      try {
-        const currentPrice = await this.executor.getCurrentPrice(trade.tokenId, trade.side);
-        if (currentPrice !== null) {
-          const absoluteDiff = currentPrice - trade.price;
-          if (absoluteDiff > maxDeviation) {
-            logger.warn(`⚠️  Skipping trade: price moved +${absoluteDiff.toFixed(3)} since target's fill (${trade.price.toFixed(3)} → ${currentPrice.toFixed(3)}, max ${maxDeviation.toFixed(2)})`);
-            return;
-          }
-        }
-      } catch {
-        // If we can't check, proceed with the trade
-      }
-    }
 
     if (trade.side === 'SELL') {
       const copyShares = this.executor.calculateSharesForNotional(copyNotional, trade.price);
@@ -416,12 +248,6 @@ class PolymarketCopyBot {
   
   stop(): void {
     this.isRunning = false;
-
-    // Clear pending aggregation timers
-    for (const [, agg] of this.pendingAggregations) {
-      clearTimeout(agg.timer);
-    }
-    this.pendingAggregations.clear();
 
     if (this.wsMonitor) {
       this.wsMonitor.close();
